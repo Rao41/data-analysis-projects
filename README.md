@@ -1,6 +1,6 @@
 # Data Analysis and Financial Modelling Projects
 
-A collection of academic projects using R and Python for statistical modelling, financial data analysis, data retrieval, and visualisation.
+A collection of academic/internship projects using R and Python for statistical modelling, financial data analysis, data retrieval, and visualisation.
 
 ## Projects
 
@@ -60,14 +60,9 @@ The analysis uses current index constituent lists and price levels, so results m
 
 ## Data and Reproducibility
 
+- These are archived academic projects completed earlier; they are not guaranteed to be maintained for current package versions or external APIs.
 - Some projects require separate datasets that are not included here. Check the relevant course or data-provider terms before sharing or downloading data.
 - The loan-analysis dataset was provided by the course instructor and is not included in this repository.
 - API credentials are not included. Anyone running the data retrieval notebook must provide their own authorised credentials locally.
 - Financial data and index constituents can change over time, so results may differ when the notebooks are run again.
 - These projects were completed for academic analysis and are not production software.
-
-## Running the Projects
-
-Open `.Rmd` files in RStudio or another R Markdown-compatible environment. Open `.ipynb` files in Jupyter Notebook or JupyterLab.
-
-Install the libraries listed in each project before running it. Some projects also require external data files or API credentials, as described above.
