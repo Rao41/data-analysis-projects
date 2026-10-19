@@ -1,0 +1,388 @@
+
+```{r setup, include=FALSE}
+library(readr)
+library(dplyr)
+library(gridExtra)
+library(tree)
+library(tidyverse)
+library(caret)
+library(leaps)
+library(MASS)
+library(randomForest)
+library(gbm)
+library(ROCR)
+library(tidytext)
+library(ggplot2)
+library(wordcloud)
+library(RColorBrewer)
+library(wordcloud2)
+library(tm)
+```
+
+# Data Cleaning and Exploration
+Import the original full dataset from Kaggle. 
+```{r}
+data <- read_csv("dataset.csv")
+# View(data)
+```
+
+Now, we remove redundant variables (the sequence column, track_id, track_name, explicit, mode and time signature)
+```{r}
+dataset <- data[,-c(1,2,5,8,13,20)]
+rm(data)
+```
+
+Randomly selecting 7000 rows from the dataset
+```{r}
+set.seed(235)
+
+full_data = dataset[sample(1:nrow(dataset), 7000),]
+# View(full_data)
+# write.csv(full_data, "full_data.csv")
+```
+
+
+## Checking missing value
+```{r}
+sum(is.na(full_data))
+```
+
+## Plot Histograms to see the distribution of variables
+Exploration of the data. This helps us to determine whether we need to apply any transformation on the data. 
+```{r}
+par(mfrow=c(3,4))
+
+
+hist(full_data$duration_ms, col='steelblue', main='Duration in ms')
+hist(full_data$danceability, col='steelblue', main='Dancability')
+hist(full_data$energy, col='steelblue', main='Energy')
+hist(full_data$key, col='steelblue', main='Key')
+hist(full_data$loudness, col='steelblue', main='Loudness')
+hist(full_data$speechiness, col='steelblue', main='Speechiness')
+hist(full_data$acousticness, col='steelblue', main='Acousticness')
+hist(full_data$instrumentalness, col='steelblue', main='Instrumentalness')
+hist(full_data$liveness, col='steelblue', main='Liveness')
+hist(full_data$valence, col='steelblue', main='Valence')
+hist(full_data$tempo, col='steelblue', main='Tempo')
+```
+
+## Log Transformation for duration, speechiness, liveness, instrumentalness
+The 4 variables show a right-skewed distribution, so we applied log transformation. Creating new columns for log-transformed variables. 
+```{r}
+full_data$log_duration <- log(full_data$duration_ms+1)
+full_data$log_speechiness <- log(full_data$speechiness+1)
+full_data$log_liveness <- log(full_data$liveness+1)
+full_data$log_instrumentalness <- log(full_data$instrumentalness+1)
+```
+
+
+## Randomly split the data into training and testing data on 70:30 ratio
+```{r}
+set.seed(8)
+
+ratio = 0.7
+dt = sort(sample(nrow(full_data), nrow(full_data)*(ratio)))
+training = full_data[dt,]
+testing = full_data[-dt,]
+
+
+# write.csv(training, "training.csv")
+# write.csv(testing, "testing.csv")
+```
+
+
+## Correlation heat map plotted after importing the corrplot library
+```{r}
+library(corrplot)
+corrplot(cor(full_data[4:14]))
+```
+
+
+
+## Balance Check
+Check the distributions of selected variables in the training sample and the testing dataset. 
+```{r}
+par(mar=c(2,2,2,2))
+par(mfrow=c(1,2))
+boxplot(training["popularity"], main = "Boxplot of Popularity in Training")
+boxplot(testing["popularity"], main = "Boxplot of Popularity in Testing")
+
+
+par(mar=c(2,2,2,2))
+par(mfrow=c(1,2))
+boxplot(training["energy"], main = "Boxplot of Energy in Training")
+boxplot(testing["energy"], main = "Boxplot of Energy in Testing")
+
+par(mar=c(2,2,2,2))
+par(mfrow=c(1,2))
+boxplot(training["log_instrumentalness"], main = "Boxplot of Instrumentalness in Training")
+boxplot(testing["log_instrumentalness"], main = "Boxplot of Instrumentalness in Testing")
+
+par(mar=c(2,2,2,2))
+par(mfrow=c(1,2))
+boxplot(training["loudness"], main = "Boxplot of Loudness in Training")
+boxplot(testing["loudness"], main = "Boxplot of Loudness in Testing")
+
+
+par(mar=c(2,2,2,2))
+par(mfrow=c(1,2))
+boxplot(training["log_instrumentalness"], main = "Boxplot of Instrumentalness in Training")
+boxplot(testing["log_instrumentalness"], main = "Boxplot of Instrumentalness in Testing")
+```
+
+
+
+# Data Analytics
+## Import Data
+Importing data and creating new columns for regression and classification analysis separately. Using the median as the standard for us to determine the class of songs' popularity. 
+```{r}
+# data = read_csv("Full Data.csv")
+# training = read_csv("training.csv")
+# testing = read_csv("testing.csv")
+
+data = full_data
+median = median(data$popularity)
+data$popularity_class = ifelse(data$popularity <= median, 'no', 'yes')
+training$popularity_class = ifelse(training$popularity <= median, 'no', 'yes')
+testing$popularity_class = ifelse(testing$popularity <= median, 'no', 'yes')
+```
+
+## Regression Analysis
+### 1. Simple Linear Regression
+First, simply running a regression to see the correlation between popularity and other variables and find the significant variables. 
+```{r}
+full_model_regression = training[, c('popularity', 'danceability', 'energy', 'key', 'loudness', 'acousticness', 'valence', 'tempo', 'log_duration', 'log_speechiness', 'log_liveness', 'log_instrumentalness')]
+
+full_model__regression_testing = testing[, c('popularity', 'danceability', 'energy', 'key', 'loudness', 'acousticness', 'valence', 'tempo', 'log_duration', 'log_speechiness', 'log_liveness', 'log_instrumentalness')]
+
+reg = lm(popularity ~., data = full_model_regression)
+
+summary(reg)
+```
+
+To determine the optimal regression model, we applied Stepwise selection. 
+```{r}
+lm0.Song = glm(training$popularity ~1, data = training)
+# lm0.Song
+
+step.Song = step(lm0.Song, scope = list (upper = reg), trace = 0)
+summary(step.Song)
+
+# par(mfrow = c(2,2))
+# plot(step.Song) # 1st graph is patternless, implying that the model is adequeate. 
+```
+
+We checked the performance of the Stepwise regression on the testing data. AIC is much lower due to smaller sample size. 
+```{r}
+reg_testing = glm(popularity ~ log_instrumentalness + valence + acousticness + log_speechiness +loudness + energy, data=testing)
+summary(reg_testing)
+```
+
+
+
+### 2. Regression Tree
+Using all numerical variables to build a regression tree. According to the regression tree, only 3 variables were actually used for constructing the tree. 
+```{r}
+tree1 = tree(popularity ~., data = full_model_regression)
+summary(tree1)
+
+plot(tree1, col = 'darkgreen')
+text(tree1)
+```
+
+In order to avoid overfitting, we applied cross-validation to determine the optimal pruned tree. However, as shown below, the deviance is smallest when the number of the terminal node is 3, which is exactly the same as what we have got before. Hence, our regression tree does not suffer from overfitting and we can use it for analysis and comparison later. 
+```{r}
+set.seed(3)
+cv.popularity = cv.tree(tree1, FUN = prune.tree)
+cv.popularity$size
+cv.popularity$dev
+```
+
+We also checked the performance of the regression tree on the testing data. RSS is slightly higher when we apply the tree on the testing data. 
+```{r}
+pop.predict = predict(tree1, testing)
+mean((pop.predict-testing$popularity)^2) # Higher than that for training. Make sense
+```
+
+
+
+### 3. Bagging
+Regression trees suffer from large variance, so we tried to further look at the results of Bagging and Random Forests. 
+```{r}
+set.seed(3)
+bag.pop = randomForest(popularity~., full_model_regression, mtry = 11, importance = TRUE)
+
+bag.pop
+bag_test_predict = predict(bag.pop, newdata = full_model__regression_testing)
+mean((bag_test_predict - full_model__regression_testing$popularity)^2)
+
+importance(bag.pop)
+varImpPlot(bag.pop, col = c('darkblue', 'brown'), main = 'Importance Measure Plot - Bagging')
+```
+
+
+### 4. Random Forests
+```{r}
+set.seed(3)
+rf.pop = randomForest(popularity~., full_model_regression, mtry = 3, importance = TRUE)
+rf.pop
+
+rf_test_predict = predict(rf.pop, newdata = full_model__regression_testing)
+mean((rf_test_predict - full_model__regression_testing$popularity)^2)
+
+importance(rf.pop)
+varImpPlot(rf.pop, col = c('darkblue', 'brown'), main = 'Importance Measure Plot - Random Forests')
+```
+
+
+
+## Classfication Analysis
+Build a dataframe for classfication analysis. 
+```{r}
+full_model_classfication = training[, c('popularity_class', 'danceability', 'energy', 'key', 'loudness', 'acousticness', 'valence', 'tempo', 'log_duration', 'log_speechiness', 'log_liveness', 'log_instrumentalness')]
+
+full_model_classfication_testing = testing[, c('popularity_class', 'danceability', 'energy', 'key', 'loudness', 'acousticness', 'valence', 'tempo', 'log_duration', 'log_speechiness', 'log_liveness', 'log_instrumentalness')]
+
+full_model_classfication$popularity_class = as.factor(full_model_classfication$popularity_class)
+full_model_classfication_testing$popularity_class = as.factor(full_model_classfication_testing$popularity_class)
+```
+
+
+
+### 1. Logistic Regression 
+Similarly as what we have done before for regression analysis, we aim to run a logistic regression for classification problem. Here, the outcome of our interest is binary now: popular or not popular. 
+```{r}
+logistic_class = glm(popularity_class ~., data = full_model_classfication, family = binomial)
+
+summary(logistic_class)
+```
+
+Applying the Stepwise selection to determine the optimal logistic regression model. 
+```{r}
+nothing = glm(popularity_class~1, family = binomial, data = full_model_classfication)
+summary(nothing)
+
+
+step.logistic = step(nothing, scope = list (upper = logistic_class), trace = 0)
+summary(step.logistic)
+```
+
+
+
+### 2. Decision Tree
+```{r}
+class_tree = tree(popularity_class~., data = full_model_classfication)
+summary(class_tree)
+
+plot(class_tree, col = 'darkgreen', lwd = 2, type ="uniform")
+text(class_tree, cex = 1)
+```
+
+Assess the performance of fitted tree:
+```{r}
+dtree.pred = predict(class_tree, full_model_classfication_testing, type = 'class')
+table(dtree.pred, full_model_classfication_testing$popularity_class)
+```
+```{r}
+1-(246+765)/(336+246+765+753) # accuracy for classifying new data from this fitted tree 
+```
+
+
+### 3. Random Forests
+```{r}
+set.seed(3)
+rf.pop_class = randomForest(popularity_class~., full_model_classfication, mtry = 3, importance = TRUE)
+rf.pop_class
+
+rf_class_test_predict = predict(rf.pop_class, newdata = full_model_classfication_testing, type = "prob")
+
+importance(rf.pop_class)
+varImpPlot(rf.pop_class, col = c('darkblue', 'brown'), main = 'Importance Measure Plot - Random Forests (Classification)')
+```
+
+Accuracy Rate of Random Forests:
+```{r}
+1-(994+808)/(1492+944+808+1656) 
+# higher than the accuracy rate if we apply decision tree
+```
+
+
+### 4. Evaluation of Classification Models: ROC 
+We first focused on the logistic regression model, by predicting the frequency of popular and non-popular songs, we can get the accuracy rate and AUC. 
+```{r}
+# Logistic Regression
+predTest.logistic = predict(step.logistic, newdata = full_model_classfication_testing, type= "response")
+prediction.logisticTest = prediction(predTest.logistic, full_model_classfication_testing$popularity_class)
+rocLogistic = performance(prediction.logisticTest, measure = "tpr", x.measure = "fpr")
+# plot(rocLogistic, lwd = 2, colorkey = T, colorize = T, main = "ROC Curve for Logistic Regression")
+# abline(0,1)
+
+performance(prediction.logisticTest,  measure = "auc")@y.values
+
+
+# To get the accuracy rate
+acc.perf = performance(prediction.logisticTest, measure = "acc")
+ind = which.max(slot(acc.perf, "y.values")[[1]] )
+acc = slot(acc.perf, "y.values")[[1]][ind]
+cutoff = slot(acc.perf, "x.values")[[1]][ind]
+print(c(accuracy= acc, cutoff = cutoff)) 
+```
+
+Obtaining AUC for the decision tree and random forest. 
+```{r}
+## Decision Tree
+pred.tree = predict(class_tree, full_model_classfication_testing, type = "vector")
+prediction.tree = prediction(pred.tree[,2], full_model_classfication_testing$popularity_class)
+rocTree = performance(prediction.tree, measure = "tpr", x.measure = "fpr")
+# plot(rocTree, lwd = 3, colorkey = T, colorize = T, main = "ROC Curve for Decision Tree")
+# abline(0,1)
+
+performance(prediction.tree,  measure = "auc")@y.values
+
+
+# Random Forest
+prediction.rf = prediction(rf_class_test_predict[,2], full_model_classfication_testing$popularity_class)
+rocRF = performance(prediction.rf, measure = "tpr", x.measure = "fpr")
+# plot(rocRF, lwd = 3, colorkey = T, colorize = T, main = "ROC Curve for Random Forest")
+# abline(0,1)
+
+performance(prediction.rf,  measure = "auc")@y.values
+```
+
+Plot all 3 ROC curves together and compare between models. 
+```{r}
+plot(rocLogistic, col = "darkgreen", lwd = 2, main = "ROC Curves")
+plot(rocTree, col = "blue", lwd = 2, add = T)
+plot(rocRF,  col = "red", lwd = 2, add = T)
+abline(0,1)
+legend(0.6,0.3, c("Logistic Regression", "Decision Tree","Random Forest"), col=c("darkgreen", "blue","red"), lty=c(1,1,1))
+```
+According to the results, Random Forest has the highest accuracy rate and the AUC, suggesting that it is the best among the other applied models.
+
+### Text Mining & General Summary Statistics
+On average, whose song is most popular?
+```{r}
+agg_artists <- data %>% group_by(artists) %>% 
+  summarise(mean_popularity=mean(popularity),
+            .groups = 'drop')
+# View(agg_artists)
+```
+
+Only focus on those with high popularity index songs (i.e., popularity index is higher than the sample mean):
+```{r}
+high_popularity = data[data$popularity > median,]
+
+new = high_popularity %>% separate_rows(artists, sep = ";")
+
+new %>% count(artists, sort = TRUE) %>% wordcloud2()
+```
+
+On average, which genre is most popular (which genre appears the most in the subset of highly popular songs)?
+```{r}
+agg_genre = data %>% group_by(track_genre) %>% summarise(mean_popularity = mean(popularity))
+# View(agg_genre)
+
+high_popularity %>% count(track_genre, sort = T) %>% wordcloud2()
+```
+
+
