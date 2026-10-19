@@ -1,0 +1,258 @@
+---
+title: 'risk mgt project'
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r, echo=FALSE}
+library(quantmod)
+library(tidyverse)
+library(PerformanceAnalytics)
+library(timeSeries)
+library(tseries)
+library(roll)
+library(car)
+library(MASS)
+library(extraDistr)
+library(rugarch)
+library(rmgarch)
+library(BEKKs)
+library(QRM)
+library(dplyr)
+```
+
+## 1. Downloaded stock prices
+First, choosing six stocks from the stocks listed in the project instruction, and define the corresponding tickers of each stock.
+```{r}
+ENV.CW1 = new.env()
+stocks = c('Apple', 'Pfizer', 'Wells Fargo & Co', 'JPM', 'Amazon', 'Alphabet')
+tickers = c('AAPL', 'PFE','WFC','JPM', 'AMZN', 'GOOGL') 
+```
+
+We can get the stock prices of the selected stocks and then convert the prices into returns. After demean the returns, we can check that whether we produced the desired returns for each stock. 
+```{r}
+symbols = getSymbols(Symbols = tickers, src = 'yahoo',
+                     from = '2010-01-04', to= '2019-12-31',
+                     env = ENV.CW1)
+price = do.call(merge, eapply(env = ENV.CW1, Ad))
+names(price) = stocks 
+
+log_returns = diff(log(price)) # Compute daily log returns
+log_returns = na.omit(log_returns) 
+dm_returns = sweep(log_returns, MARGIN = 2, STATS = colMeans(log_returns))
+head(dm_returns)
+```
+
+In order to form the required portfolio, first find the portfolio price by taking the mean of stock prices at each trading day and then take the difference of logarithms to compute the portfolio returns. 
+```{r}
+portfolio_price = xts(rowMeans(price), order.by = index(price))
+colnames(portfolio_price)[1] = "Portfolio Price"
+
+portfolio_returns = diff(log(portfolio_price))
+colnames(portfolio_returns)[1] = "Portfolio Returns"
+portfolio_returns = na.omit(portfolio_returns)
+dm_portfolio_returns = sweep(portfolio_returns, MARGIN = 2, 
+                             STATS = colMeans(portfolio_returns))
+plot(dm_portfolio_returns, main = "Portfolio Returns", col = "darkblue")
+```
+
+
+## 2. Portfolio's Conditional Volatility Estimate
+#### PCA Analysis on 6 Stocks
+Using PCA to find the main factors that explain the most of the variation in returns. We can either check the cummulative proportion of each factor mathematically or by visualising it. 
+```{r}
+PCA = prcomp(x = dm_returns)
+Table_PCA = rbind(PCA$rotation, summary(PCA)$importance)
+knitr::kable(Table_PCA, digits=4, align = 'c')
+
+plot(Table_PCA['Proportion of Variance',], type = "l", col = "darkred", lwd = 2,
+     ylab = "Proportion of Variance", xlab = "PC", 
+     main = "PC Proportions of Total Variance")
+
+factor = PCA$x
+```
+
+#### Run Univariate GARCH(1,1) on Selected Number of factors  
+From the cumulative proportion shown above, I decided use to first 4 factors as they explain around 90% variation. Based on this, we can apply a univariate GARCH(1,1) to compute the variance-covariance matrix of factors. 
+```{r}
+nf = 4 # Using the first 4 factors
+
+GARCH_1_1 = ugarchspec(variance.model = list(model = "sGARCH", 
+                                              garchOrder = c(1, 1)), 
+                        mean.model = list(armaOrder = c(0, 0), 
+                                          include.mean = FALSE))
+uspec = multispec(replicate(nf, GARCH_1_1)) 
+GARCH_multifit = multifit(multispec = uspec, data = factor[,1:nf], 
+                           solver = 'hybrid')
+
+sigma = sigma(GARCH_multifit) 
+htMat = xts(sigma^2, order.by = index(dm_returns)) # Variance-Covariance Matrix of factors
+```
+
+#### Building Conditional Variance Covariance Matrix of Returns
+```{r}
+errors = dm_returns - factor[, 1:nf] %*% t(PCA$rotation[,1:nf])
+omega = diag(colMeans(errors^2))
+ht = array(dim = c(length(stocks), length(stocks), dim(dm_returns)[1]))
+for (i in 1:dim(dm_returns)[1]) {
+  ht[, , i] = PCA$rotation[,1:nf] %*% diag(as.numeric(htMat[i, ])) %*% 
+    t(PCA$rotation[,1:nf]) + omega
+}    # Multivariate Conditional Variance Model
+```
+
+#### Applying weights to estimate portfolio's conditional volatility
+```{r}
+weights = c(1/6, 1/6, 1/6, 1/6, 1/6, 1/6)
+
+weights = as.matrix(weights)
+volatility = sqrt(t(weights) %*% ht[,,dim(dm_returns)[1]] %*% weights)
+volatility = as.numeric(volatility)
+volatility
+```
+
+
+## 3. Estimate VaR(5%) for 2 Jan 2020
+```{r}
+VaR_2020 = -volatility * qnorm(0.05) * portfolio_price[nrow(portfolio_price)]
+VaR_2020 = as.numeric(VaR_2020)
+VaR_2020
+```
+
+
+## 4. Backtesting
+#### Set-up 
+Before applying the "moving window" strategy to obtain the VaR(5%) and then conducting the coverage tests, we have to specify the estimation window and testing window first. Estimation window is used for computing VaR, and the testing window will be used for conducting coverage tests later. 
+```{r}
+Trading_day = length(index(dm_portfolio_returns)) # Number of trading days
+p = 0.05
+WE = 500
+testing_window = Trading_day - WE
+```
+
+#### Moving Window -- Computing VaR(5%) for each trading day after WE
+(I was trying to run a for loop to compute the VaR for each estimation window; however, even though I obtained the VaRt matrix by running the code shown below, R shows error message saying that the loop goes beyond the data and I was not able to debug it. And given the large data set and long time period, it takes a really long time for R to generate VaRt data frame)
+```{r}
+# Build a blank data frame first
+VaRt = xts(matrix(nrow = length(index(dm_portfolio_returns)), ncol = 1), 
+            order.by = index(dm_portfolio_returns)) 
+volatility_t = xts(matrix(nrow = length(index(dm_portfolio_returns)), ncol = 1), 
+            order.by = index(dm_portfolio_returns)) 
+
+# Filling in the obtained VaR for each row after 500th trading day
+for (t in WE+1 : Trading_day){
+  t1 = t - WE # Start of the data window
+  t2 = t - 1  # end of the window
+  
+  dmreturn_t = dm_returns[t1:t2,]
+  PCA_t = prcomp(x = dmreturn_t)
+  factor_t = PCA_t$x
+
+  GARCH_multifit_t = multifit(multispec = uspec, data = factor_t[,1:nf], 
+                            solver = 'hybrid')
+ 
+  sigma_t = sigma(GARCH_multifit_t) 
+ 
+  htMat_t = xts(sigma_t^2, order.by = index(dmreturn_t))
+
+
+  errors_t = dmreturn_t - factor_t[,1:nf] %*% t(PCA_t$rotation[,1:nf])
+  omega_t = diag(colMeans(errors_t^2))
+
+  ht_t = PCA_t$rotation[,1:nf] %*% diag(as.numeric(htMat_t[WE, ])) %*%
+      t(PCA_t$rotation[,1:nf]) + omega_t # Multivariate Model
+  
+  volatility_t[t] = sqrt(t(weights) %*% ht_t %*% weights)
+
+  volatility_t[t] = as.numeric(volatility_t[t])
+  VaRt[t]= - volatility_t[t] * qnorm(0.05) 
+}
+```
+
+#### Obtaining Hit Sequence
+Hit sequence is a sequence of zeros and ones, indicating the periods when the violations occurred. When the portfolio return is smaller than -VaR(5%) on the corresponding trading day, a violation occurs. 
+```{r}
+hit_sequence = dm_portfolio_returns < - VaRt
+colnames(hit_sequence)[1] = "Violation"  # Change Column Name
+hit_sequence$Violation = as.integer(as.logical(hit_sequence$Violation))
+hit_sequence = na.omit(hit_sequence)
+```
+
+
+#### Summary Statistics & Violation Ratio
+We can calculate the number of violations, number of no violations and the expected number of violations. 
+```{r}
+violations = sum(dm_portfolio_returns < - VaRt, na.rm = TRUE)
+v0 = testing_window - violations
+
+EV <- p*testing_window # Expected Violations
+print(paste('Number of violations is',violations)) 
+print(paste('Number of no violations is',v0))
+print(paste('Expected number of violations is',EV))
+```
+
+
+
+Violation ratio tells us whether the model over forecatss or under forecasts risk.
+```{r}
+VR = violations / EV # observed number of violations/expected number of violations 
+print(paste('Violation ratio',VR))
+
+if (VR > 1) {
+  print('You have underforecasted risk')
+} else if(VR < 1) {
+  print("You have overforecasted risk")
+} else {
+  print('The model forecasts risk accurately')
+}
+```
+
+#### Unconditional Coverage Test
+For unconditional coverage test, we test the null hypothesis that violations occur with probability 5%. 
+```{r}
+phat = violations / (violations + v0)
+restricted= (1 - p)^v0 * p^violations  # Restricted Model
+unrestricted = (1-phat)^v0 * phat^violations # Unrestricted Model
+LR = -2 * (log(restricted) - log(unrestricted))
+if (LR > qchisq(p = 1 - p, df = 1)) {
+  print('Null hypothesis H0 is rejected')
+} else {
+  print('We cannot reject the null')
+}
+```
+
+#### Conditional Coverage Test
+For conditional coverage test, we test whether violations are independent. 
+```{r}
+logical = matrix(ncol = 4, nrow = testing_window)
+for (i in 2:testing_window) {
+  logical[i,1] <- coredata(hit_sequence)[i-1] == 0 & coredata(hit_sequence)[i] == 0
+  logical[i,2] <- coredata(hit_sequence)[i-1] == 0 & coredata(hit_sequence)[i] == 1
+  logical[i,3] <- coredata(hit_sequence)[i-1] == 1 & coredata(hit_sequence)[i] == 0
+  logical[i,4] <- coredata(hit_sequence)[i-1] == 1 & coredata(hit_sequence)[i] == 1
+}
+
+V_00 = sum(logical[,1], na.rm = T) 
+V_01 = sum(logical[,2], na.rm = T) 
+V_10 = sum(logical[,3], na.rm = T)
+V_11 = sum(logical[,4], na.rm = T)
+  
+p_00 = V_00/(V_00 + V_01)
+p_01 = V_01/(V_00 + V_01)
+p_10 = V_10/(V_10 + V_11)
+p_11 = V_11/(V_10 + V_11)
+  
+phat_conditional =  (V_01 + V_11)/(V_00 + V_01 + V_10 + V_11)
+restricted_conditional = (1-phat_conditional)^(V_00 + V_10) * 
+  (phat_conditional)^(V_01 + V_11)
+
+unrestricted_conditional = (p_00)^(V_00) * (p_01)^(V_01) * (p_10)^(V_10) * (p_11)^(V_11)
+LR_conditional = -2 * (log(restricted_conditional) - log(unrestricted_conditional))
+
+if (LR_conditional > qchisq(p = 1 - p, df = 1)) {
+    print('Null hypothesis H0 is rejected')
+} else {
+    print('We cannot reject the null')
+}
+```
+
